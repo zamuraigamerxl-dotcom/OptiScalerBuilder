@@ -1,26 +1,12 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
-name: Run OptiScalerBuilder
+name: Build OptiScaler DLSS-NR + XeFG (Combined)
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 */6 * * *"
-#  push:
-#    branches: [ "master" ]
-#  pull_request:
-#    branches: [ "master" ]
-    
-env:
-  # Path to the solution file relative to the root of the project.
-  SOLUTION_FILE_PATH: .
 
-  # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+env:
+  SOLUTION_FILE_PATH: .
   BUILD_CONFIGURATION: Release
 
 permissions:
@@ -32,53 +18,39 @@ jobs:
     environment: Build
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout wilsjo2 fork (DLSS-NR PreSR Multipass)
+      uses: actions/checkout@v6
       with:
-        repository: optiscaler/OptiScaler
+        repository: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass
+        ref: main
         path: .
         submodules: recursive
-        
+
     - name: OptiScaler - Extract Version
       id: get_version
       working-directory: ${{ github.workspace }}
       shell: powershell
       run: |
-        # Ensure the file exists before proceeding
         $resourceFile = ".\OptiScaler\resource.h"
         if (-Not (Test-Path $resourceFile)) {
             Write-Error "File not found: $resourceFile"
             exit 1
         }
 
-        # Helper function to extract the first matching line for a version component
         function Get-Version-Component {
-            param (
-                [string]$pattern,
-                [string]$replacement
-            )
-            # Use Select-String and take only the first match
+            param ([string]$pattern, [string]$replacement)
             $line = Get-Content $resourceFile | Select-String -Pattern $pattern | Select-Object -First 1
-            if ($line) {
-                return ($line.Line -replace $replacement).Trim()
-            } else {
-                Write-Error "Pattern not found: $pattern"
-                exit 1
-            }
+            if ($line) { return ($line.Line -replace $replacement).Trim() }
+            else { Write-Error "Pattern not found: $pattern"; exit 1 }
         }
 
-        # Extract version components (only the first match for each pattern)
         $majorVersion = Get-Version-Component 'VER_MAJOR_VERSION' '#define VER_MAJOR_VERSION\s+'
         $minorVersion = Get-Version-Component 'VER_MINOR_VERSION' '#define VER_MINOR_VERSION\s+'
         $hotfixVersion = Get-Version-Component 'VER_HOTFIX_VERSION' '#define VER_HOTFIX_VERSION\s+'
         $buildVersion = Get-Version-Component 'VER_BUILD_NUMBER' '#define VER_BUILD_NUMBER\s+'
 
-        # Merge into a single version string
-        #$version = "v$majorVersion.$minorVersion.$hotfixVersion-pre$buildVersion"
-
-        # Read resource.h to determine the release type
         $resourceContent = Get-Content $resourceFile -Raw
 
-        # Construct version based on upstream release type
         if ($resourceContent -match '(?m)^\s*#define\s+VER_DEV_RELEASE\s*$') {
             $version = "v$majorVersion.$minorVersion.$hotfixVersion-dev"
         }
@@ -89,84 +61,32 @@ jobs:
             $version = "v$majorVersion.$minorVersion.$hotfixVersion"
         }
 
-        # Get the current date and time
         $date = Get-Date -Format "yyyyMMdd_HHmmss"
-
-        # Get OptiScaler short commit SHA
         $sha = git rev-parse --short=8 HEAD
+        $outputFileName = "OptiScaler_DLSSNR_XeFG_${version}_${sha}_${date}"
 
-        # Construct the output filename with version, SHA and timestamp
-        $outputFileName = "OptiScaler_${version}_${sha}_${date}"
-
-        # Output the generated filename
         Write-Output "Generated Filename: $outputFileName"
         Write-Output "OptiScaler SHA: $sha"
 
-        # Write outputs to GITHUB_OUTPUT
         "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         "filename=$outputFileName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
       continue-on-error: false
-      
-    - name: OptiScaler - Debug Outputs
-      run: |
-        echo "Version: ${{ steps.get_version.outputs.version }}"
-        echo "Filename: ${{ steps.get_version.outputs.filename }}"
-      
-    - name: bygalacos - Patch OptiScaler Menu Title
-      shell: powershell
-      run: |
-        $file = "${{ github.workspace }}\OptiScaler\menu\menu_common.cpp"
 
-        $content = Get-Content $file -Raw
-
-        $content = $content.Replace(
-        'windowTitle = StrFmt("%s - %s %s %s %s",',
-        'windowTitle = StrFmt("%s - %s %s%s%s | github.com/bygalacos/OptiScalerBuilder",'
-        )
-
-        $content = $content.Replace(
-        'StrFmt("- %s", state.gameName.c_str())',
-        'StrFmt(" - %s", state.gameName.c_str())'
-        )
-
-        $content = $content.Replace(
-        '? "(Q)" : ""',
-        '? " (Q)" : ""'
-        )
-
-        $content = $content.Replace(
-        '? "(OP)" : ""',
-        '? " (OP)" : ""'
-        )
-
-        Set-Content $file $content -NoNewline
-        Write-Host "OptiScaler menu title patched successfully."
-      
     - name: OptiScaler - Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v2
-      
+
     - name: OptiScaler - Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
       run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} ${{env.SOLUTION_FILE_PATH}} /verbosity:minimal
-      
-    - name: bygalacos - Customize OptiScaler
+
+    - name: Customize output folders
       shell: powershell
       run: |
         @(
           "${{ github.workspace }}\x64\Release\a\OptiScaler\plugins",
           "${{ github.workspace }}\x64\Release\a\OptiScaler\streamline"
         ) | ForEach-Object {
-          if (Test-Path $_) {
-            Write-Host "Folder already exists: $($_)"
-          }
-          else {
-            Write-Host "Creating folder: $($_)"
-          }
-
           New-Item -ItemType Directory -Path $_ -Force | Out-Null
         }
 
@@ -176,186 +96,168 @@ jobs:
           "${{ github.workspace }}\x64\Release\a\setup_linux.sh",
           "${{ github.workspace }}\x64\Release\a\setup_windows.bat"
         ) | ForEach-Object {
-          if (Test-Path $_) {
-            Write-Host "Removing $($_)"
-            Remove-Item $_ -Recurse -Force
-          }
-          else {
-            Write-Host "Not found $($_)"
-          }
+          if (Test-Path $_) { Remove-Item $_ -Recurse -Force }
         }
-      
-    - name: bygalacos - Download Latest fakenvapi
+
+    - name: Download Latest fakenvapi
       id: fakenvapi
       shell: powershell
       run: |
         $release = Invoke-RestMethod "https://api.github.com/repos/optiscaler/fakenvapi/releases/latest"
         "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
-        Write-Host "fakenvapi version output set: $($release.tag_name)"
         $asset = $release.assets | Where-Object { $_.name -match "\.7z$" } | Select-Object -First 1
-
-        if (-not $asset) {
-        throw "No fakenvapi.7z asset found in latest release."
-        }
-
+        if (-not $asset) { throw "No fakenvapi.7z asset found." }
         $out = "${{ github.workspace }}\fakenvapi.7z"
-
-        Write-Host "Downloading $($asset.name)"
-        Write-Host "Size: $([math]::Round($asset.size / 1MB, 2)) MB"
-
         Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $out
-
-        Write-Host "Extracting fakenvapi.7z"
         7z x $out "-o${{ github.workspace }}\\x64\Release\a\OptiScaler" -y
 
-        if ($LASTEXITCODE -ne 0) {
-          throw "7z extraction failed with exit code $LASTEXITCODE"
-        }
-      
-    - name: bygalacos - Download Latest OptiPatcher
+    - name: Download Latest OptiPatcher
       id: optipatcher
       shell: powershell
       run: |
         $release = Invoke-RestMethod "https://api.github.com/repos/optiscaler/OptiPatcher/releases/tags/rolling"
         "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
-        Write-Host "OptiPatcher version output set: $($release.tag_name)"
         $asset = $release.assets | Where-Object { $_.name -match "\.asi$" } | Select-Object -First 1
+        if (-not $asset) { throw "No OptiPatcher.asi asset found." }
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "${{ github.workspace }}\x64\Release\a\OptiScaler\plugins\OptiPatcher.asi"
 
-        if (-not $asset) {
-          throw "No OptiPatcher.asi asset found in rolling release."
-        }
-
-        $out = "${{ github.workspace }}\x64\Release\a\OptiScaler\plugins\OptiPatcher.asi"
-
-        Write-Host "Downloading $($asset.name)"
-        Write-Host "Size: $([math]::Round($asset.size / 1MB, 2)) MB"
-
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $out
-      
-    - name: bygalacos - Download Latest NVIDIA Streamline SDK
+    - name: Download Latest NVIDIA Streamline SDK
       id: streamline
       shell: powershell
       run: |
         $release = Invoke-RestMethod "https://api.github.com/repos/NVIDIA-RTX/Streamline/releases/latest"
         "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
-        Write-Host "NVIDIA Streamline SDK version output set: $($release.tag_name)"
         $asset = $release.assets | Where-Object { $_.name -match "^streamline-sdk-v[0-9.]+\.zip$" } | Select-Object -First 1
-
-        if (-not $asset) {
-          throw "No streamline-sdk zip asset found in latest release."
-        }
-
-        $url = $asset.browser_download_url
+        if (-not $asset) { throw "No streamline-sdk zip found." }
         $out = "${{ github.workspace }}\streamline-sdk.zip"
-
-        Write-Host "Downloading $($asset.name)"
-        Write-Host "Size: $([math]::Round($asset.size / 1MB, 2)) MB"
-
-        $request = [System.Net.HttpWebRequest]::Create($url)
-        $response = $request.GetResponse()
-        $totalBytes = $response.ContentLength
-
-        $stream = $response.GetResponseStream()
-        $file = [System.IO.File]::Create($out)
-
-        $buffer = New-Object byte[] 1048576
-        $totalRead = 0
-        $lastPrint = Get-Date
-        $startTime = Get-Date
-
-        try {
-          while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $file.Write($buffer, 0, $read)
-            $totalRead += $read
-
-            $now = Get-Date
-            if (($now - $lastPrint).TotalSeconds -ge 2) {
-              $downloadedMb = [math]::Round($totalRead / 1MB, 2)
-              $totalMb = [math]::Round($totalBytes / 1MB, 2)
-              $percent = [math]::Round(($totalRead / $totalBytes) * 100, 2)
-              $speed = [math]::Round(($totalRead / 1MB) / (($now - $startTime).TotalSeconds), 2)
-
-              Write-Host "$downloadedMb MB / $totalMb MB ($percent%) - $speed MB/s"
-              $lastPrint = $now
-            }
-          }
-        }
-        finally {
-          $file.Close()
-          $stream.Close()
-          $response.Close()
-        }
-
-        Write-Host "Download completed: $([math]::Round($totalRead / 1MB, 2)) MB"
-
-        Write-Host "Extracting Streamline SDK..."
-        Expand-Archive "${{ github.workspace }}\streamline-sdk.zip" -DestinationPath "${{ github.workspace }}\streamline-sdk" -Force
-        Write-Host "Extraction completed."
-
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $out
+        Expand-Archive $out -DestinationPath "${{ github.workspace }}\streamline-sdk" -Force
         Get-ChildItem "${{ github.workspace }}\streamline-sdk\bin\x64" -File -Filter "*.dll" |
-        ForEach-Object {
-          Write-Host "Copying $($_.Name)"
-          Copy-Item $_.FullName "${{ github.workspace }}\x64\Release\a\OptiScaler\streamline" -Force
-        }
-      
-    - name: bygalacos - Download Latest DLSS Enabler
+        ForEach-Object { Copy-Item $_.FullName "${{ github.workspace }}\x64\Release\a\OptiScaler\streamline" -Force }
+
+    - name: Download Latest DLSS Enabler
       id: dlssenabler
       shell: powershell
       run: |
         $Files = Invoke-RestMethod "https://api.github.com/repos/${{ github.repository }}/contents/dlss-enabler"
-
         $Versions = $Files |
             Where-Object { $_.name -like "*.zip" } |
             ForEach-Object {
                 if ($_.name -match 'DLSS Enabler (\d+(?:\.\d+){2,3})') {
-                    [PSCustomObject]@{
-                        Version = [version]$Matches[1]
-                        File    = $_.name
-                        Url     = $_.download_url
-                    }
+                    [PSCustomObject]@{ Version = [version]$Matches[1]; File = $_.name; Url = $_.download_url }
                 }
-            } |
-            Sort-Object Version -Descending
-
-        $Versions | Format-Table @{Label="Available DLSS Enabler Versions In Repository";Expression={$_.File}}, Version -AutoSize
-
+            } | Sort-Object Version -Descending
         $LatestFile = $Versions | Select-Object -First 1
         "version=$($LatestFile.Version)" >> $env:GITHUB_OUTPUT
-        Write-Host "DLSS Enabler version output set: $($LatestFile.Version)"
-
-        Write-Host "Downloading DLSS Enabler" "$($LatestFile.Version)"
         Invoke-WebRequest -Uri $LatestFile.Url -OutFile "${{ github.workspace }}\dlss-enabler.zip"
-        Write-Host "Size: $([math]::Round((Get-Item "${{ github.workspace }}\dlss-enabler.zip").Length / 1MB, 2)) MB"
-        Write-Host "Extracting DLSS Enabler" "$($LatestFile.Version)"
         Expand-Archive -Path "${{ github.workspace }}\dlss-enabler.zip" -DestinationPath "${{ github.workspace }}\x64\Release\a\OptiScaler" -Force
         Rename-Item -Path "${{ github.workspace }}\x64\Release\a\OptiScaler\version.dll" -NewName "dlss-enabler-headless.dll"
-      
-    - name: bygalacos - Download Latest dlssg_to_fsr3
+
+    - name: Download Latest dlssg_to_fsr3
       id: dlssg_to_fsr3
       shell: powershell
       run: |
         $dlssg_to_fsr3_version = "v0.130"
         "version=$dlssg_to_fsr3_version" >> $env:GITHUB_OUTPUT
-        Write-Host "dlssg_to_fsr3 version output set: $dlssg_to_fsr3_version"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bygalacos/OptiScalerBuilder/master/dlssg_to_fsr3/dlssg_to_fsr3_amd_is_better.zip" -OutFile "${{ github.workspace }}\dlssg_to_fsr3.zip"
+        Expand-Archive -Path "${{ github.workspace }}\dlssg_to_fsr3.zip" -DestinationPath "${{ github.workspace }}\x64\Release\a\OptiScaler" -Force
 
-        Write-Host "Downloading dlssg_to_fsr3" "$dlssg_to_fsr3_version"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bygalacos/OptiScalerBuilder/master/dlssg_to_fsr3/dlssg_to_fsr3_amd_is_better.zip" -OutFile "${{ github.workspace }}\dlssg_to_fsr3_amd_is_better.zip"
-        Write-Host "Size: $([math]::Round((Get-Item "${{ github.workspace }}\dlssg_to_fsr3_amd_is_better.zip").Length / 1MB, 2)) MB"
+    - name: Pre-configure OptiScaler.ini for max performance pipeline
+      shell: powershell
+      run: |
+        $iniPath = "${{ github.workspace }}\x64\Release\a\OptiScaler.ini"
+        $iniContent = @"
+        ; ============================================================
+        ; OptiScaler - DLSS-NR PreSR + XeFG Combined Build
+        ; Pipeline: Game render (low res) -> NR (cheap, small image)
+        ;           -> Upscaler (SR) -> Frame Generation
+        ; NR runs BEFORE upscaler AND before frame generation
+        ; for maximum performance (NR processes the small pre-SR image)
+        ; ============================================================
 
-        Write-Host "Extracting dlssg_to_fsr3" "$dlssg_to_fsr3_version"
-        Expand-Archive -Path "${{ github.workspace }}\dlssg_to_fsr3_amd_is_better.zip" -DestinationPath "${{ github.workspace }}\x64\Release\a\OptiScaler" -Force
-      
+        [ProcessFilter]
+        TargetProcessName=auto
+
+        [DlssNr]
+        ; DLSS Neural Rendering - runs BEFORE Super Resolution
+        Enabled=true
+        RunBeforeSR=true
+        Passes=1
+        WorkingScale=1.0
+
+        [FrameGen]
+        ; Frame Generation - runs AFTER upscaler (NR already ran before)
+        ; FGOutput options: xefg (Intel FG, all GPUs), fsrfg, dlssg, fsr4fg
+        External=false
+        Enabled=false
+        FGInput=upscaler
+        FGOutput=xefg
+        FGNvngxReplacement=None
+
+        [DLSSG]
+        ; InterpolationCount: 1=2x, 2=3x, 3=4x total frames
+        InterpolationCount=1
+        ForceDMFG=false
+
+        [Log]
+        LogToFile=true
+        LogLevel=2
+        "@
+
+        Set-Content -Path $iniPath -Value $iniContent -Encoding UTF8
+        Write-Host "OptiScaler.ini pre-configured with NR-before-SR pipeline"
+
+        $readmePath = "${{ github.workspace }}\x64\Release\a\PIPELINE-README.txt"
+        $readmeContent = @"
+        ============================================================
+        DLSS-NR + XeFG COMBINED BUILD - PIPELINE ORDER
+        ============================================================
+
+        This build runs Neural Rendering BEFORE upscaling and before
+        frame generation, for maximum performance:
+
+          1. Game renders at low resolution (e.g. 1080p for 4K target)
+          2. DLSS Neural Rendering processes the SMALL image (cheap!)
+             -> RunBeforeSR=true, WorkingScale=1.0
+          3. Upscaler (DLSS/FSR/XeSS) upscales to target resolution
+          4. Frame Generation interpolates between upscaled frames
+             -> FGOutput=xefg (Intel FG, works on ALL GPUs)
+
+        WHY THIS IS FASTER:
+        NR runs on the pre-upscale image (e.g. 1080p) instead of the
+        full 4K output. The model does ~4x less work.
+
+        TO ENABLE FRAME GENERATION:
+        In the Insert overlay or OptiScaler.ini, set:
+          [FrameGen]
+          Enabled=true
+          FGOutput=xefg        ; Intel FG for all GPUs
+          ; or fsrfg / dlssg / fsr4fg
+
+        TO ADJUST NR MULTIPLIER / PASSES:
+        In the Insert overlay under "DLSS Neural Rendering":
+          - Passes: 1 (fastest) to 3 (highest quality)
+          - WorkingScale: 1.0 (full pre-SR res) or 0.5 (even cheaper)
+
+        FG MULTIPLIER (InterpolationCount):
+          1 = 2x total frames
+          2 = 3x total frames
+          3 = 4x total frames
+        "@
+
+        Set-Content -Path $readmePath -Value $readmeContent -Encoding UTF8
+        Write-Host "PIPELINE-README.txt written"
+
     - name: Compress the artifact
       run: |
-        $zipName = "${{ steps.get_version.outputs.filename }}_bygalacos.7z"
+        $zipName = "${{ steps.get_version.outputs.filename }}.7z"
         7z a -r "${{ github.workspace }}\$zipName" "${{ github.workspace }}\x64\Release\a\*"
-
       continue-on-error: false
-        
+
     - uses: actions/upload-artifact@v7.0.0
       with:
-        name: '${{ steps.get_version.outputs.filename }}_bygalacos'
-        path: '${{ github.workspace }}\${{ steps.get_version.outputs.filename }}_bygalacos.7z'
+        name: '${{ steps.get_version.outputs.filename }}'
+        path: '${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.7z'
         archive: false
         compression-level: 0
         if-no-files-found: error
@@ -366,21 +268,40 @@ jobs:
         tag_name: ${{ steps.get_version.outputs.filename }}
         name: ${{ steps.get_version.outputs.filename }}
         body: |
-          ## Current Build Info
+          ## Combined Build: DLSS-NR PreSR + XeFG (Intel FG) for all GPUs
+
+          Built from: `wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass` (main)
 
           | Component | Version |
           |-----------|---------|
-          | OptiScaler | ${{ steps.get_version.outputs.version }} - SHA: ${{ steps.get_version.outputs.sha }} |
+          | OptiScaler (DLSS-NR fork) | ${{ steps.get_version.outputs.version }} - SHA: ${{ steps.get_version.outputs.sha }} |
           | fakenvapi | ${{ steps.fakenvapi.outputs.version }} |
           | OptiPatcher | ${{ steps.optipatcher.outputs.version }} |
           | NVIDIA Streamline SDK | ${{ steps.streamline.outputs.version }} |
           | DLSS Enabler | ${{ steps.dlssenabler.outputs.version }} |
           | dlssg_to_fsr3 | ${{ steps.dlssg_to_fsr3.outputs.version }} |
 
-          Build Package:
-          `${{ steps.get_version.outputs.filename }}_bygalacos.7z`
+          ### Pipeline order (max performance)
+          ```
+          Game (low res) -> DLSS-NR (small image, cheap) -> Upscaler SR -> Frame Gen
+          ```
+          NR runs BEFORE upscaler AND before frame generation.
+          Pre-configured in OptiScaler.ini (RunBeforeSR=true).
+
+          ### Features in this build
+          - DLSS Neural Rendering BEFORE Super Resolution (PreSR multipass)
+          - XeFG (Intel Frame Generation) for ALL GPUs via OptiFG
+          - FSR3-FG, FSR4-FG, DLSSG support
+          - FG multiplier: 2x/3x/4x (InterpolationCount 1/2/3)
+          - All standard OptiScaler upscaler features
+
+          ### Quick start
+          1. Extract beside game .exe
+          2. Run setup_windows.bat
+          3. Press Insert in-game -> enable NR + FG
+          4. See PIPELINE-README.txt for full config
         files: |
-          ${{ github.workspace }}\${{ steps.get_version.outputs.filename }}_bygalacos.7z
+          ${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.7z
         prerelease: false
         make_latest: true
         overwrite_files: true
