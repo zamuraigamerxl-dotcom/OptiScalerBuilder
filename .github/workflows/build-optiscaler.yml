@@ -25,6 +25,198 @@ jobs:
         ref: main
         path: .
         submodules: recursive
+        fetch-depth: 0
+
+    - name: Merge XeFG unlock from Coldwood1026
+      shell: bash
+      run: |
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
+        git remote add coldwood https://github.com/Coldwood1026/OptiScaler.git
+        git fetch coldwood master --depth=50
+        echo "Attempting merge of Coldwood XeFG unlock..."
+        if git merge coldwood/master --no-edit --allow-unrelated-histories; then
+          echo "Merge succeeded cleanly!"
+        else
+          echo "Merge has conflicts, attempting auto-resolve..."
+          # List conflicted files
+          git diff --name-only --diff-filter=U
+          # Try to resolve conflicts by preferring Coldwood for XeFG files,
+          # and wilsjo2 for NR files
+          for file in $(git diff --name-only --diff-filter=U); do
+            echo "Resolving conflict in: $file"
+            if echo "$file" | grep -qi "XeFG\|xefg"; then
+              # XeFG files: prefer Coldwood (theirs)
+              git checkout --theirs "$file"
+              git add "$file"
+            elif echo "$file" | grep -qi "Config\|vcxproj"; then
+              # Config/project files: try to union both sides
+              git checkout --theirs "$file"
+              git add "$file"
+            else
+              # Other files: prefer wilsjo2 (ours) to keep NR
+              git checkout --ours "$file"
+              git add "$file"
+            fi
+          done
+          git commit --no-edit || echo "Nothing to commit after resolve"
+        fi
+        echo "Merge complete. HEAD:"
+        git log --oneline -5
+
+    - name: Patch menu_common.cpp - Add Ajustes Finos section
+      shell: python
+      run: |
+        file_path = "OptiScaler/menu/menu_common.cpp"
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        old_start = 'ImGui::SeparatorText("Upscale Ratio Override");'
+        old_end = 'if (config->QualityRatioOverrideEnabled.value_or_default())'
+
+        start_idx = content.index(old_start)
+        end_idx = content.index(old_end, start_idx)
+
+        new_code = '''        // ============================================================
+        // AJUSTES FINOS - 3 sliders
+        // ============================================================
+        ImGui::SeparatorText("Ajustes Finos");
+
+        // --- 1. Resolution Scale (30% a 100%) ---
+        {
+            float ratio = config->UpscaleRatioOverrideValue.value_or_default();
+            float pct = (1.0f / ratio) * 100.0f;
+            if (pct < 30.0f) pct = 30.0f;
+            if (pct > 100.0f) pct = 100.0f;
+
+            bool isOverridden = config->UpscaleRatioOverrideEnabled.value_or_default();
+
+            if (!isOverridden)
+                ImGui::BeginDisabled();
+
+            if (ImGui::SliderFloat("Resolution Scale", &pct, 30.0f, 100.0f, "%.0f%%"))
+            {
+                if (!isOverridden)
+                {
+                    config->UpscaleRatioOverrideEnabled = true;
+                    config->QualityRatioOverrideEnabled = false;
+                    isOverridden = true;
+                }
+                ratio = 100.0f / pct;
+                config->UpscaleRatioOverrideValue = ratio;
+            }
+
+            if (!isOverridden)
+                ImGui::EndDisabled();
+
+            ShowHelpMarker("Internal resolution as %% of target\\n\\n"
+                           "50%% on 4K = 1920x1080 internal\\n"
+                           "100%% = native (no upscaling)\\n"
+                           "Overrides the game's quality preset");
+
+            if (currentFeature != nullptr)
+            {
+                uint32_t targetW = currentFeature->TargetWidth();
+                uint32_t targetH = currentFeature->TargetHeight();
+                uint32_t renderW = static_cast<uint32_t>(targetW / ratio);
+                uint32_t renderH = static_cast<uint32_t>(targetH / ratio);
+                ImGui::TextDisabled("Internal: %ux%u -> Output: %ux%u", renderW, renderH, targetW, targetH);
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Override##res", &isOverridden))
+            {
+                config->UpscaleRatioOverrideEnabled = isOverridden;
+                if (isOverridden)
+                    config->QualityRatioOverrideEnabled = false;
+            }
+        }
+
+        ImGui::Spacing();
+
+        // --- 2. Nitidez / Enfoque (0.0 a 1.3) ---
+        {
+            bool rcasOn = config->RcasEnabled.value_or(rcasEnabled);
+
+            if (!rcasOn)
+                ImGui::BeginDisabled();
+
+            float sharpness = config->Sharpness.value_or_default();
+
+            if (ImGui::SliderFloat("Nitidez", &sharpness, 0.0f, 1.3f, "%.2f"))
+            {
+                if (!rcasOn)
+                {
+                    config->RcasEnabled = true;
+                    config->OverrideSharpness = true;
+                    rcasOn = true;
+                }
+                config->Sharpness = sharpness;
+                config->OverrideSharpness = true;
+            }
+
+            if (!rcasOn)
+                ImGui::EndDisabled();
+
+            ShowHelpMarker("Sharpening post-upscale (RCAS)\\n\\n"
+                           "0.0 = sin sharpening\\n"
+                           "0.3 = suave (recomendado)\\n"
+                           "1.0 = agresivo\\n"
+                           "1.3 = maximo");
+
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Enable##sharp", &rcasOn))
+            {
+                config->RcasEnabled = rcasOn;
+                if (rcasOn)
+                    config->OverrideSharpness = true;
+            }
+        }
+
+        ImGui::Spacing();
+
+        // --- 3. Intensidad de color (0.0 a 2.0) ---
+        {
+            bool contrastOn = config->ContrastEnabled.value_or_default();
+
+            if (!contrastOn)
+                ImGui::BeginDisabled();
+
+            float contrast = config->Contrast.value_or_default();
+            float intensityPct = (contrast + 2.0f) / 4.0f * 2.0f;
+
+            if (ImGui::SliderFloat("Intensidad", &intensityPct, 0.0f, 2.0f, "%.2f"))
+            {
+                if (!contrastOn)
+                {
+                    config->ContrastEnabled = true;
+                    contrastOn = true;
+                }
+                contrast = (intensityPct / 2.0f) * 4.0f - 2.0f;
+                config->Contrast = contrast;
+            }
+
+            if (!contrastOn)
+                ImGui::EndDisabled();
+
+            ShowHelpMarker("Intensidad de color / contraste\\n\\n"
+                           "0.0 = menos intenso\\n"
+                           "1.0 = normal\\n"
+                           "2.0 = mas intenso");
+
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Enable##color", &contrastOn))
+                config->ContrastEnabled = contrastOn;
+        }
+
+        '''
+
+        content = content[:start_idx] + new_code + "\n        " + content[end_idx:]
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        print(f"Patched menu_common.cpp: replaced {end_idx - start_idx} chars with {len(new_code)} chars")
 
     - name: OptiScaler - Extract Version
       id: get_version
@@ -93,8 +285,7 @@ jobs:
         @(
           "${{ github.workspace }}\x64\Release\a\Licenses",
           "${{ github.workspace }}\x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!",
-          "${{ github.workspace }}\x64\Release\a\setup_linux.sh",
-          "${{ github.workspace }}\x64\Release\a\setup_windows.bat"
+          "${{ github.workspace }}\x64\Release\a\setup_linux.sh"
         ) | ForEach-Object {
           if (Test-Path $_) { Remove-Item $_ -Recurse -Force }
         }
@@ -162,50 +353,73 @@ jobs:
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bygalacos/OptiScalerBuilder/master/dlssg_to_fsr3/dlssg_to_fsr3_amd_is_better.zip" -OutFile "${{ github.workspace }}\dlssg_to_fsr3.zip"
         Expand-Archive -Path "${{ github.workspace }}\dlssg_to_fsr3.zip" -DestinationPath "${{ github.workspace }}\x64\Release\a\OptiScaler" -Force
 
+    - name: Download Intel XeSS SDK (libxess_fg.dll + libxell.dll)
+      id: xess
+      shell: powershell
+      run: |
+        $release = Invoke-RestMethod "https://api.github.com/repos/intel/xess/releases/latest"
+        "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
+        Write-Host "Intel XeSS SDK version: $($release.tag_name)"
+        $asset = $release.assets | Where-Object { $_.name -match "\.zip$" } | Select-Object -First 1
+        if (-not $asset) { throw "No XeSS SDK zip found." }
+        $out = "${{ github.workspace }}\xess-sdk.zip"
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $out
+        Expand-Archive $out -DestinationPath "${{ github.workspace }}\xess-sdk" -Force
+        # Copy libxess_fg.dll and libxell.dll to the output
+        $dest = "${{ github.workspace }}\x64\Release\a\OptiScaler"
+        $fgDll = Get-ChildItem "${{ github.workspace }}\xess-sdk" -Recurse -Filter "libxess_fg.dll" | Select-Object -First 1
+        $xellDll = Get-ChildItem "${{ github.workspace }}\xess-sdk" -Recurse -Filter "libxell.dll" | Select-Object -First 1
+        if ($fgDll) { Copy-Item $fgDll.FullName $dest -Force; Write-Host "Copied libxess_fg.dll" }
+        else { Write-Host "WARNING: libxess_fg.dll not found in SDK" }
+        if ($xellDll) { Copy-Item $xellDll.FullName $dest -Force; Write-Host "Copied libxell.dll" }
+        else { Write-Host "WARNING: libxell.dll not found in SDK" }
+
     - name: Pre-configure OptiScaler.ini for max performance pipeline
       shell: powershell
       run: |
         $iniPath = "${{ github.workspace }}\x64\Release\a\OptiScaler.ini"
-        $iniContent = @"
-        ; ============================================================
-        ; OptiScaler - DLSS-NR PreSR + XeFG Combined Build
-        ; Pipeline: Game render (low res) -> NR (cheap, small image)
-        ;           -> Upscaler (SR) -> Frame Generation
-        ; NR runs BEFORE upscaler AND before frame generation
-        ; for maximum performance (NR processes the small pre-SR image)
-        ; ============================================================
 
-        [ProcessFilter]
-        TargetProcessName=auto
+        # Keep the original OptiScaler.ini from the build (has all defaults)
+        # and append our NR + FG overrides at the end
+        $nrConfig = @"
+
+        ; ============================================================
+        ; DLSS-NR + XeFG MFG Unlock Combined Build
+        ; Pipeline: Game render -> NR (cheap) -> SR -> XeFG x3
+        ; NR before upscaler, XeFG unlocked for all GPUs
+        ; ============================================================
 
         [DlssNr]
-        ; DLSS Neural Rendering - runs BEFORE Super Resolution
         Enabled=true
         RunBeforeSR=true
         Passes=1
-        WorkingScale=1.0
+        WorkingScale=0.7
 
         [FrameGen]
-        ; Frame Generation - runs AFTER upscaler (NR already ran before)
-        ; FGOutput options: xefg (Intel FG, all GPUs), fsrfg, dlssg, fsr4fg
         External=false
         Enabled=false
         FGInput=upscaler
         FGOutput=xefg
         FGNvngxReplacement=None
 
-        [DLSSG]
-        ; InterpolationCount: 1=2x, 2=3x, 3=4x total frames
-        InterpolationCount=1
-        ForceDMFG=false
+        [XeFG]
+        UnlockMFG=true
+        MaxInterpolatedFrames=7
+        ExtraPacing=true
+        InterpolationCount=2
 
         [Log]
         LogToFile=true
         LogLevel=2
         "@
 
-        Set-Content -Path $iniPath -Value $iniContent -Encoding UTF8
-        Write-Host "OptiScaler.ini pre-configured with NR-before-SR pipeline"
+        if (Test-Path $iniPath) {
+          Add-Content -Path $iniPath -Value $nrConfig -Encoding UTF8
+          Write-Host "Merged NR+FG settings into existing OptiScaler.ini"
+        } else {
+          Set-Content -Path $iniPath -Value $nrConfig -Encoding UTF8
+          Write-Host "Created OptiScaler.ini with NR+FG settings"
+        }
 
         $readmePath = "${{ github.workspace }}\x64\Release\a\PIPELINE-README.txt"
         $readmeContent = @"
@@ -268,25 +482,31 @@ jobs:
         tag_name: ${{ steps.get_version.outputs.filename }}
         name: ${{ steps.get_version.outputs.filename }}
         body: |
-          ## Combined Build: DLSS-NR PreSR + XeFG (Intel FG) for all GPUs
+          ## Combined Build: DLSS-NR + XeFG MFG Unlock (all GPUs)
 
-          Built from: `wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass` (main)
+          Merges `wilsjo2` (Neural Render) + `Coldwood1026` (XeFG unlock) + Ajustes Finos GUI
 
           | Component | Version |
           |-----------|---------|
-          | OptiScaler (DLSS-NR fork) | ${{ steps.get_version.outputs.version }} - SHA: ${{ steps.get_version.outputs.sha }} |
+          | OptiScaler (NR + XeFG unlock) | ${{ steps.get_version.outputs.version }} - SHA: ${{ steps.get_version.outputs.sha }} |
           | fakenvapi | ${{ steps.fakenvapi.outputs.version }} |
           | OptiPatcher | ${{ steps.optipatcher.outputs.version }} |
           | NVIDIA Streamline SDK | ${{ steps.streamline.outputs.version }} |
           | DLSS Enabler | ${{ steps.dlssenabler.outputs.version }} |
           | dlssg_to_fsr3 | ${{ steps.dlssg_to_fsr3.outputs.version }} |
+          | Intel XeSS SDK | ${{ steps.xess.outputs.version }} |
 
-          ### Pipeline order (max performance)
+          ### Features
+          - DLSS Neural Rendering BEFORE upscaler (RunBeforeSR=true)
+          - XeFG (Intel FG) UNLOCKED for all GPUs via Coldwood1026 patch
+          - XeFG MFG up to 8x (MaxInterpolatedFrames=7)
+          - Ajustes Finos: Resolution Scale + Nitidez + Intensidad sliders
+          - libxess_fg.dll + libxell.dll included
+
+          ### Pipeline
           ```
-          Game (low res) -> DLSS-NR (small image, cheap) -> Upscaler SR -> Frame Gen
+          Game -> NR (756p, cheap) -> SR -> XeFG x3 -> Output
           ```
-          NR runs BEFORE upscaler AND before frame generation.
-          Pre-configured in OptiScaler.ini (RunBeforeSR=true).
 
           ### Features in this build
           - DLSS Neural Rendering BEFORE Super Resolution (PreSR multipass)
