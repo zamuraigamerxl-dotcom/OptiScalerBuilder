@@ -27,24 +27,86 @@ jobs:
         submodules: recursive
         fetch-depth: 0
 
-    - name: Merge Neural Render from wilsjo2
+    - name: Add Neural Render files from wilsjo2 (no merge, no conflicts)
       shell: bash
       run: |
         git config user.name "github-actions"
         git config user.email "github-actions@github.com"
         git remote add wilsjo2 https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass.git
-        git fetch wilsjo2 main --depth=100
-        echo "Merging wilsjo2 NR with -X ours (keep Coldwood code, add NR files from wilsjo2)..."
-        git merge wilsjo2/main --no-edit -X ours --allow-unrelated-histories
-        echo "Merge complete."
-        # Verify NR files were added
+        git fetch wilsjo2 main --depth=1
+
+        echo "=== Copying ONLY new files from wilsjo2 that don't exist in Coldwood ==="
+
+        # Get list of files in wilsjo2 that don't exist in our tree
+        # Only copy .h and .cpp files in OptiScaler/ directory
+        git ls-tree -r --name-only wilsjo2/main -- OptiScaler/ | while read file; do
+          if [ ! -f "$file" ]; then
+            echo "NEW: $file"
+            git checkout wilsjo2/main -- "$file"
+          fi
+        done
+
+        echo "=== Files copied ==="
+        echo ""
+        echo "=== Verifying NR directory ==="
         if [ -d "OptiScaler/dlssnr" ]; then
           echo "OK: dlssnr/ directory present"
-          ls OptiScaler/dlssnr/*.h OptiScaler/dlssnr/*.cpp 2>/dev/null | head -10
+          ls OptiScaler/dlssnr/ 2>/dev/null
         else
-          echo "WARNING: dlssnr/ directory not found!"
+          echo "WARNING: dlssnr/ not found!"
         fi
-        git log --oneline -3
+
+        echo "=== Done ==="
+
+    - name: Update .vcxproj with new NR files
+      shell: python
+      run: |
+        import os, re
+
+        vcxproj = "OptiScaler/OptiScaler.vcxproj"
+        with open(vcxproj, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Find all .cpp and .h files in OptiScaler/ directory
+        new_clcompile = []
+        new_clinclude = []
+        for root, dirs, files in os.walk("OptiScaler"):
+            for f in files:
+                if f.endswith((".cpp", ".h")):
+                    relpath = os.path.relpath(os.path.join(root, f), "OptiScaler")
+                    relpath_win = relpath.replace("/", "\\")
+                    if f.endswith(".cpp"):
+                        new_clcompile.append(relpath_win)
+                    else:
+                        new_clinclude.append(relpath_win)
+
+        # Find what's already in the vcxproj
+        existing_compile = set(re.findall(r'ClCompile Include="([^"]+)"', content))
+        existing_include = set(re.findall(r'ClInclude Include="([^"]+)"', content))
+
+        # Add missing .cpp files
+        missing_cpp = [f for f in new_clcompile if f not in existing_compile]
+        missing_h = [f for f in new_clinclude if f not in existing_include]
+
+        if missing_cpp:
+            insert = "\n".join(f'    <ClCompile Include="{f}" />' for f in missing_cpp)
+            content = content.replace("</ItemGroup>", insert + "\n  </ItemGroup>", 1)
+            print(f"Added {len(missing_cpp)} .cpp files to vcxproj")
+            for f in missing_cpp:
+                print(f"  + {f}")
+
+        if missing_h:
+            insert = "\n".join(f'    <ClInclude Include="{f}" />' for f in missing_h)
+            content = content.replace("</ItemGroup>", insert + "\n  </ItemGroup>", 1)
+            print(f"Added {len(missing_h)} .h files to vcxproj")
+            for f in missing_h:
+                print(f"  + {f}")
+
+        if not missing_cpp and not missing_h:
+            print("No new files needed in vcxproj")
+
+        with open(vcxproj, "w", encoding="utf-8") as f:
+            f.write(content)
 
     - name: Patch menu_common.cpp - Add Ajustes Finos section
       shell: python
