@@ -18,51 +18,33 @@ jobs:
     environment: Build
 
     steps:
-    - name: Checkout wilsjo2 fork (DLSS-NR PreSR Multipass)
+    - name: Checkout Coldwood1026 (XeFG unlock base)
       uses: actions/checkout@v6
       with:
-        repository: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass
-        ref: main
+        repository: Coldwood1026/OptiScaler
+        ref: master
         path: .
         submodules: recursive
         fetch-depth: 0
 
-    - name: Merge XeFG unlock from Coldwood1026
+    - name: Merge Neural Render from wilsjo2
       shell: bash
       run: |
         git config user.name "github-actions"
         git config user.email "github-actions@github.com"
-        git remote add coldwood https://github.com/Coldwood1026/OptiScaler.git
-        git fetch coldwood master --depth=50
-        echo "Attempting merge of Coldwood XeFG unlock..."
-        if git merge coldwood/master --no-edit --allow-unrelated-histories; then
-          echo "Merge succeeded cleanly!"
+        git remote add wilsjo2 https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass.git
+        git fetch wilsjo2 main --depth=100
+        echo "Merging wilsjo2 NR with -X ours (keep Coldwood code, add NR files from wilsjo2)..."
+        git merge wilsjo2/main --no-edit -X ours --allow-unrelated-histories
+        echo "Merge complete."
+        # Verify NR files were added
+        if [ -d "OptiScaler/dlssnr" ]; then
+          echo "OK: dlssnr/ directory present"
+          ls OptiScaler/dlssnr/*.h OptiScaler/dlssnr/*.cpp 2>/dev/null | head -10
         else
-          echo "Merge has conflicts, attempting auto-resolve..."
-          # List conflicted files
-          git diff --name-only --diff-filter=U
-          # Try to resolve conflicts by preferring Coldwood for XeFG files,
-          # and wilsjo2 for NR files
-          for file in $(git diff --name-only --diff-filter=U); do
-            echo "Resolving conflict in: $file"
-            if echo "$file" | grep -qi "XeFG\|xefg"; then
-              # XeFG files: prefer Coldwood (theirs)
-              git checkout --theirs "$file"
-              git add "$file"
-            elif echo "$file" | grep -qi "Config\|vcxproj"; then
-              # Config/project files: try to union both sides
-              git checkout --theirs "$file"
-              git add "$file"
-            else
-              # Other files: prefer wilsjo2 (ours) to keep NR
-              git checkout --ours "$file"
-              git add "$file"
-            fi
-          done
-          git commit --no-edit || echo "Nothing to commit after resolve"
+          echo "WARNING: dlssnr/ directory not found!"
         fi
-        echo "Merge complete. HEAD:"
-        git log --oneline -5
+        git log --oneline -3
 
     - name: Patch menu_common.cpp - Add Ajustes Finos section
       shell: python
