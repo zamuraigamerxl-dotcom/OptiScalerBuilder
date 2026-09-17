@@ -1,13 +1,7 @@
-name: Build OptiScaler NR + XeFG Unlock (Combined)
+name: Build NR + XeFG
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"
-
-env:
-  SOLUTION_FILE_PATH: .
-  BUILD_CONFIGURATION: Release
 
 permissions:
   contents: write
@@ -15,353 +9,94 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    environment: Build
 
     steps:
-    - name: Checkout wilsjo2 fork (has NR + XeFG code)
-      uses: actions/checkout@v6
+    - uses: actions/checkout@v6
       with:
         repository: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass
         ref: main
         path: .
         submodules: recursive
 
-    - name: Download XeFGUnlock.h and XeFGPacing.h from Coldwood1026
+    - name: Download XeFGUnlock.h from Coldwood
       shell: pwsh
       run: |
-        $dest = "OptiScaler\proxies"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Coldwood1026/OptiScaler/master/OptiScaler/proxies/XeFGUnlock.h" -OutFile "$dest\XeFGUnlock.h"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Coldwood1026/OptiScaler/master/OptiScaler/proxies/XeFGPacing.h" -OutFile "$dest\XeFGPacing.h"
-        Write-Host "Downloaded XeFGUnlock.h and XeFGPacing.h"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Coldwood1026/OptiScaler/master/OptiScaler/proxies/XeFGUnlock.h" -OutFile "OptiScaler\proxies\XeFGUnlock.h"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Coldwood1026/OptiScaler/master/OptiScaler/proxies/XeFGPacing.h" -OutFile "OptiScaler\proxies\XeFGPacing.h"
 
-    - name: Apply XeFG unlock patches
-      shell: python
+    - name: Patch XeFG_Proxy.h
+      shell: pwsh
       run: |
-        import re
+        $f = "OptiScaler\proxies\XeFG_Proxy.h"
+        $c = Get-Content $f -Raw
+        $c = $c.Replace("#pragma once", "#pragma once`n#include ""XeFGUnlock.h""")
+        $c = $c.Replace("_dll = libxefgModule", "_dll = libxefgModule;`n    if (_dll) XeFGUnlock::Apply(_dll)")
+        Set-Content $f $c -NoNewline
 
-        # --- 1. Patch XeFG_Proxy.h: add include + unlock call ---
-        f = "OptiScaler/proxies/XeFG_Proxy.h"
-        with open(f, "r", encoding="utf-8") as fh:
-            c = fh.read()
-        if "XeFGUnlock" not in c:
-            c = c.replace("#pragma once", "#pragma once\n#include \"XeFGUnlock.h\"", 1)
-            # Add unlock call after DLL load - find pattern like _dll = ...Module
-            for pattern in ["_dll = libxefgModule", "_dll = module", "module = LoadLibrary"]:
-                if pattern in c:
-                    c = c.replace(pattern, pattern + ";\n    if (_dll) XeFGUnlock::Apply(_dll)", 1)
-                    break
-            with open(f, "w", encoding="utf-8") as fh:
-                fh.write(c)
-            print("Patched XeFG_Proxy.h")
-        else:
-            print("XeFG_Proxy.h already patched")
-
-        # --- 2. Patch Config.h: add 3 config fields ---
-        f = "OptiScaler/Config.h"
-        with open(f, "r", encoding="utf-8") as fh:
-            c = fh.read()
-        if "FGXeFGUnlockEnabled" not in c:
-            fields = "\n" \
-                "    // XeFG MFG Unlock (Coldwood1026)\n" \
-                "    static constexpr int32_t XeFGMaxInterpolations = 7;\n" \
-                "    CustomOptional<bool> FGXeFGUnlockEnabled { true };\n" \
-                "    CustomOptional<int>  FGXeFGMaxInterpolatedFrames { XeFGMaxInterpolations };\n" \
-                "    CustomOptional<bool> FGXeFGExtraPacing { true };\n"
-            # Insert before final closing brace of class
-            idx = c.rfind("};")
-            if idx > 0:
-                c = c[:idx] + fields + "\n" + c[idx:]
-            with open(f, "w", encoding="utf-8") as fh:
-                fh.write(c)
-            print("Patched Config.h")
-        else:
-            print("Config.h already has XeFG fields")
-
-        # --- 3. Patch Config.cpp: add INI read/write ---
-        f = "OptiScaler/Config.cpp"
-        with open(f, "r", encoding="utf-8") as fh:
-            c = fh.read()
-        if "FGXeFGUnlockEnabled" not in c:
-            # Add read - after last readBool block
-            read_code = "\n" \
-                "        // XeFG MFG Unlock\n" \
-                "        FGXeFGUnlockEnabled.set_from_config(readBool(\"XeFG\", \"UnlockMFG\"));\n" \
-                "        FGXeFGMaxInterpolatedFrames.set_from_config(readInt(\"XeFG\", \"MaxInterpolatedFrames\"));\n" \
-                "        FGXeFGExtraPacing.set_from_config(readBool(\"XeFG\", \"ExtraPacing\"));\n"
-            idx = c.rfind("readBool")
-            if idx > 0:
-                end = c.find("\n", idx)
-                end = c.find("\n", end + 1)
-                c = c[:end+1] + read_code + c[end+1:]
-
-            # Add save - after last SetValue block
-            save_code = "\n" \
-                "        // XeFG MFG Unlock\n" \
-                "        ini.SetValue(\"XeFG\", \"UnlockMFG\", GetBoolValue(Instance()->FGXeFGUnlockEnabled.value_for_config()).c_str());\n" \
-                "        ini.SetValue(\"XeFG\", \"MaxInterpolatedFrames\", std::to_string(Instance()->FGXeFGMaxInterpolatedFrames.value_for_config()).c_str());\n" \
-                "        ini.SetValue(\"XeFG\", \"ExtraPacing\", GetBoolValue(Instance()->FGXeFGExtraPacing.value_for_config()).c_str());\n"
-            idx = c.rfind("SetValue")
-            if idx > 0:
-                end = c.find("\n", idx)
-                end = c.find("\n", end + 1)
-                c = c[:end+1] + save_code + c[end+1:]
-
-            with open(f, "w", encoding="utf-8") as fh:
-                fh.write(c)
-            print("Patched Config.cpp")
-        else:
-            print("Config.cpp already has XeFG read/write")
-
-        # --- 4. Patch .vcxproj: add new header files ---
-        f = "OptiScaler/OptiScaler.vcxproj"
-        with open(f, "r", encoding="utf-8") as fh:
-            c = fh.read()
-        if "XeFGUnlock.h" not in c:
-            c = c.replace("</ItemGroup>",
-                '    <ClInclude Include="proxies\\XeFGUnlock.h" />\n    <ClInclude Include="proxies\\XeFGPacing.h" />\n  </ItemGroup>', 1)
-            with open(f, "w", encoding="utf-8") as fh:
-                fh.write(c)
-            print("Patched .vcxproj")
-        else:
-            print(".vcxproj already has new files")
-
-        print("All XeFG unlock patches applied!")
-
-    - name: Patch menu_common.cpp - Ajustes Finos
-      shell: python
+    - name: Patch Config.h
+      shell: pwsh
       run: |
-        f = "OptiScaler/menu/menu_common.cpp"
-        with open(f, "r", encoding="utf-8") as fh:
-            content = fh.read()
+        $f = "OptiScaler\Config.h"
+        $c = Get-Content $f -Raw
+        $insert = "`n    static constexpr int32_t XeFGMaxInterpolations = 7;`n    CustomOptional<bool> FGXeFGUnlockEnabled { true };`n    CustomOptional<int>  FGXeFGMaxInterpolatedFrames { XeFGMaxInterpolations };`n    CustomOptional<bool> FGXeFGExtraPacing { true };`n"
+        $idx = $c.LastIndexOf("};")
+        $c = $c.Substring(0, $idx) + $insert + $c.Substring($idx)
+        Set-Content $f $c -NoNewline
 
-        old_start = 'ImGui::SeparatorText("Upscale Ratio Override");'
-        old_end = 'if (config->QualityRatioOverrideEnabled.value_or_default())'
-
-        if old_start not in content:
-            print("WARNING: Could not find Upscale Ratio Override section, skipping menu patch")
-        else:
-            start_idx = content.index(old_start)
-            end_idx = content.index(old_end, start_idx)
-
-            new_code = '''        // ============================================================
-        // AJUSTES FINOS
-        // ============================================================
-        ImGui::SeparatorText("Ajustes Finos");
-
-        {
-            float ratio = config->UpscaleRatioOverrideValue.value_or_default();
-            float pct = (1.0f / ratio) * 100.0f;
-            if (pct < 30.0f) pct = 30.0f;
-            if (pct > 100.0f) pct = 100.0f;
-            bool isOverridden = config->UpscaleRatioOverrideEnabled.value_or_default();
-            if (!isOverridden) ImGui::BeginDisabled();
-            if (ImGui::SliderFloat("Resolution Scale", &pct, 30.0f, 100.0f, "%.0f%%"))
-            {
-                if (!isOverridden) { config->UpscaleRatioOverrideEnabled = true; config->QualityRatioOverrideEnabled = false; isOverridden = true; }
-                ratio = 100.0f / pct;
-                config->UpscaleRatioOverrideValue = ratio;
-            }
-            if (!isOverridden) ImGui::EndDisabled();
-            ShowHelpMarker("Internal resolution as %% of target");
-            if (currentFeature != nullptr)
-            {
-                uint32_t tW = currentFeature->TargetWidth(); uint32_t tH = currentFeature->TargetHeight();
-                uint32_t rW = static_cast<uint32_t>(tW / ratio); uint32_t rH = static_cast<uint32_t>(tH / ratio);
-                ImGui::TextDisabled("Internal: %ux%u -> Output: %ux%u", rW, rH, tW, tH);
-            }
-            ImGui::SameLine();
-            if (ImGui::Checkbox("Override##res", &isOverridden)) { config->UpscaleRatioOverrideEnabled = isOverridden; if (isOverridden) config->QualityRatioOverrideEnabled = false; }
-        }
-
-        ImGui::Spacing();
-
-        {
-            bool rcasOn = config->RcasEnabled.value_or(rcasEnabled);
-            if (!rcasOn) ImGui::BeginDisabled();
-            float sharpness = config->Sharpness.value_or_default();
-            if (ImGui::SliderFloat("Nitidez", &sharpness, 0.0f, 1.3f, "%.2f"))
-            {
-                if (!rcasOn) { config->RcasEnabled = true; config->OverrideSharpness = true; rcasOn = true; }
-                config->Sharpness = sharpness; config->OverrideSharpness = true;
-            }
-            if (!rcasOn) ImGui::EndDisabled();
-            ShowHelpMarker("Sharpening post-upscale (RCAS)");
-            ImGui::SameLine();
-            if (ImGui::Checkbox("Enable##sharp", &rcasOn)) { config->RcasEnabled = rcasOn; if (rcasOn) config->OverrideSharpness = true; }
-        }
-
-        ImGui::Spacing();
-
-        {
-            bool contrastOn = config->ContrastEnabled.value_or_default();
-            if (!contrastOn) ImGui::BeginDisabled();
-            float contrast = config->Contrast.value_or_default();
-            float intensityPct = (contrast + 2.0f) / 4.0f * 2.0f;
-            if (ImGui::SliderFloat("Intensidad", &intensityPct, 0.0f, 2.0f, "%.2f"))
-            {
-                if (!contrastOn) { config->ContrastEnabled = true; contrastOn = true; }
-                contrast = (intensityPct / 2.0f) * 4.0f - 2.0f;
-                config->Contrast = contrast;
-            }
-            if (!contrastOn) ImGui::EndDisabled();
-            ShowHelpMarker("Intensidad de color / contraste");
-            ImGui::SameLine();
-            if (ImGui::Checkbox("Enable##color", &contrastOn)) config->ContrastEnabled = contrastOn;
-        }
-
-        '''
-
-            content = content[:start_idx] + new_code + "\n        " + content[end_idx:]
-            with open(f, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            print("Patched menu_common.cpp with Ajustes Finos")
-
-    - name: OptiScaler - Extract Version
-      id: get_version
-      working-directory: ${{ github.workspace }}
-      shell: powershell
+    - name: Patch Config.cpp
+      shell: pwsh
       run: |
-        $resourceFile = ".\OptiScaler\resource.h"
-        if (-Not (Test-Path $resourceFile)) { Write-Error "File not found: $resourceFile"; exit 1 }
-        function Get-Version-Component { param ([string]$pattern, [string]$replacement); $line = Get-Content $resourceFile | Select-String -Pattern $pattern | Select-Object -First 1; if ($line) { return ($line.Line -replace $replacement).Trim() } else { Write-Error "Pattern not found: $pattern"; exit 1 } }
-        $majorVersion = Get-Version-Component 'VER_MAJOR_VERSION' '#define VER_MAJOR_VERSION\s+'
-        $minorVersion = Get-Version-Component 'VER_MINOR_VERSION' '#define VER_MINOR_VERSION\s+'
-        $hotfixVersion = Get-Version-Component 'VER_HOTFIX_VERSION' '#define VER_HOTFIX_VERSION\s+'
-        $buildVersion = Get-Version-Component 'VER_BUILD_NUMBER' '#define VER_BUILD_NUMBER\s+'
-        $resourceContent = Get-Content $resourceFile -Raw
-        if ($resourceContent -match '(?m)^\s*#define\s+VER_DEV_RELEASE\s*$') { $version = "v$majorVersion.$minorVersion.$hotfixVersion-dev" }
-        elseif ($resourceContent -match '(?m)^\s*#define\s+VER_PRE_RELEASE\s*$') { $version = "v$majorVersion.$minorVersion.$hotfixVersion-pre$buildVersion" }
-        else { $version = "v$majorVersion.$minorVersion.$hotfixVersion" }
-        $date = Get-Date -Format "yyyyMMdd_HHmmss"
-        $sha = git rev-parse --short=8 HEAD
-        $outputFileName = "OptiScaler_NR_XeFG_${version}_${sha}_${date}"
-        "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-        "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-        "filename=$outputFileName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        $f = "OptiScaler\Config.cpp"
+        $c = Get-Content $f -Raw
+        $insert = "`n        FGXeFGUnlockEnabled.set_from_config(readBool(""XeFG"", ""UnlockMFG""));`n        FGXeFGMaxInterpolatedFrames.set_from_config(readInt(""XeFG"", ""MaxInterpolatedFrames""));`n        FGXeFGExtraPacing.set_from_config(readBool(""XeFG"", ""ExtraPacing""));`n"
+        $idx = $c.LastIndexOf("readBool")
+        $end = $c.IndexOf("`n", $idx)
+        $end = $c.IndexOf("`n", $end + 1)
+        $c = $c.Substring(0, $end + 1) + $insert + $c.Substring($end + 1)
+        Set-Content $f $c -NoNewline
 
-    - name: OptiScaler - Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v2
-
-    - name: OptiScaler - Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} ${{env.SOLUTION_FILE_PATH}} /verbosity:minimal
-
-    - name: Customize output folders
-      shell: powershell
+    - name: Patch vcxproj
+      shell: pwsh
       run: |
-        @("${{ github.workspace }}\x64\Release\a\OptiScaler\plugins", "${{ github.workspace }}\x64\Release\a\OptiScaler\streamline") | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
-        @("${{ github.workspace }}\x64\Release\a\Licenses", "${{ github.workspace }}\x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!", "${{ github.workspace }}\x64\Release\a\setup_linux.sh") | ForEach-Object { if (Test-Path $_) { Remove-Item $_ -Recurse -Force } }
+        $f = "OptiScaler\OptiScaler.vcxproj"
+        $c = Get-Content $f -Raw
+        $c = $c.Replace("</ItemGroup>", '    <ClInclude Include="proxies\XeFGUnlock.h" />' + "`n" + '    <ClInclude Include="proxies\XeFGPacing.h" />' + "`n  </ItemGroup>")
+        Set-Content $f $c -NoNewline
 
-    - name: Download fakenvapi
-      id: fakenvapi
-      shell: powershell
-      run: |
-        $release = Invoke-RestMethod "https://api.github.com/repos/optiscaler/fakenvapi/releases/latest"
-        "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
-        $asset = $release.assets | Where-Object { $_.name -match "\.7z$" } | Select-Object -First 1
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "${{ github.workspace }}\fakenvapi.7z"
-        7z x "${{ github.workspace }}\fakenvapi.7z" "-o${{ github.workspace }}\x64\Release\a\OptiScaler" -y
+    - uses: microsoft/setup-msbuild@v2
 
-    - name: Download OptiPatcher
-      id: optipatcher
-      shell: powershell
-      run: |
-        $release = Invoke-RestMethod "https://api.github.com/repos/optiscaler/OptiPatcher/releases/tags/rolling"
-        "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
-        $asset = $release.assets | Where-Object { $_.name -match "\.asi$" } | Select-Object -First 1
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "${{ github.workspace }}\x64\Release\a\OptiScaler\plugins\OptiPatcher.asi"
+    - name: Build
+      run: msbuild /m /p:Configuration=Release . /verbosity:minimal
 
-    - name: Download Streamline SDK
-      id: streamline
-      shell: powershell
+    - name: Package
+      shell: pwsh
       run: |
-        $release = Invoke-RestMethod "https://api.github.com/repos/NVIDIA-RTX/Streamline/releases/latest"
-        "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
-        $asset = $release.assets | Where-Object { $_.name -match "^streamline-sdk-v[0-9.]+\.zip$" } | Select-Object -First 1
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "${{ github.workspace }}\streamline-sdk.zip"
-        Expand-Archive "${{ github.workspace }}\streamline-sdk.zip" -DestinationPath "${{ github.workspace }}\streamline-sdk" -Force
-        Get-ChildItem "${{ github.workspace }}\streamline-sdk\bin\x64" -File -Filter "*.dll" | ForEach-Object { Copy-Item $_.FullName "${{ github.workspace }}\x64\Release\a\OptiScaler\streamline" -Force }
-
-    - name: Download Intel XeSS SDK (libxess_fg.dll + libxell.dll)
-      id: xess
-      shell: powershell
-      run: |
+        $dest = "x64\Release\a\OptiScaler"
+        New-Item -ItemType Directory -Path "$dest\streamline" -Force | Out-Null
+        New-Item -ItemType Directory -Path "$dest\plugins" -Force | Out-Null
+        # Intel XeSS DLLs
         $release = Invoke-RestMethod "https://api.github.com/repos/intel/xess/releases/latest"
-        "version=$($release.tag_name)" >> $env:GITHUB_OUTPUT
         $asset = $release.assets | Where-Object { $_.name -match "\.zip$" } | Select-Object -First 1
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "${{ github.workspace }}\xess-sdk.zip"
-        Expand-Archive "${{ github.workspace }}\xess-sdk.zip" -DestinationPath "${{ github.workspace }}\xess-sdk" -Force
-        $dest = "${{ github.workspace }}\x64\Release\a\OptiScaler"
-        $fg = Get-ChildItem "${{ github.workspace }}\xess-sdk" -Recurse -Filter "libxess_fg.dll" | Select-Object -First 1
-        $xell = Get-ChildItem "${{ github.workspace }}\xess-sdk" -Recurse -Filter "libxell.dll" | Select-Object -First 1
-        if ($fg) { Copy-Item $fg.FullName $dest -Force; Write-Host "Copied libxess_fg.dll" }
-        if ($xell) { Copy-Item $xell.FullName $dest -Force; Write-Host "Copied libxell.dll" }
-
-    - name: Pre-configure OptiScaler.ini
-      shell: powershell
-      run: |
-        $iniPath = "${{ github.workspace }}\x64\Release\a\OptiScaler.ini"
-        $nrConfig = @"
-
-        ; ============================================================
-        ; NR + XeFG MFG Unlock Combined Build
-        ; ============================================================
-
-        [DlssNr]
-        Enabled=true
-        RunBeforeSR=true
-        Passes=1
-        WorkingScale=0.7
-
-        [FrameGen]
-        External=false
-        Enabled=false
-        FGInput=upscaler
-        FGOutput=xefg
-        FGNvngxReplacement=None
-
-        [XeFG]
-        UnlockMFG=true
-        MaxInterpolatedFrames=7
-        ExtraPacing=true
-        InterpolationCount=2
-
-        [Log]
-        LogToFile=true
-        LogLevel=2
-        "@
-        if (Test-Path $iniPath) { Add-Content -Path $iniPath -Value $nrConfig -Encoding UTF8 } else { Set-Content -Path $iniPath -Value $nrConfig -Encoding UTF8 }
-
-    - name: Compress
-      run: |
-        $zipName = "${{ steps.get_version.outputs.filename }}.7z"
-        7z a -r "${{ github.workspace }}\$zipName" "${{ github.workspace }}\x64\Release\a\*"
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "xess.zip"
+        Expand-Archive "xess.zip" -DestinationPath "xess" -Force
+        $fg = Get-ChildItem "xess" -Recurse -Filter "libxess_fg.dll" | Select-Object -First 1
+        $xell = Get-ChildItem "xess" -Recurse -Filter "libxell.dll" | Select-Object -First 1
+        if ($fg) { Copy-Item $fg.FullName $dest -Force }
+        if ($xell) { Copy-Item $xell.FullName $dest -Force }
+        # INI
+        $ini = "x64\Release\a\OptiScaler.ini"
+        Add-Content $ini "`n[DlssNr]`nEnabled=true`nRunBeforeSR=true`nPasses=1`nWorkingScale=0.7`n[FrameGen]`nFGOutput=xefg`n[XeFG]`nUnlockMFG=true`nInterpolationCount=2"
+        # Zip
+        7z a -r "release.7z" "x64\Release\a\*"
 
     - uses: actions/upload-artifact@v7.0.0
       with:
-        name: '${{ steps.get_version.outputs.filename }}'
-        path: '${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.7z'
-        archive: false
-        compression-level: 0
-        if-no-files-found: error
+        name: OptiScaler-NR-XeFG
+        path: release.7z
 
-    - name: Publish Release
-      uses: softprops/action-gh-release@v2
+    - uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ steps.get_version.outputs.filename }}
-        name: ${{ steps.get_version.outputs.filename }}
-        body: |
-          ## NR + XeFG Unlock Combined Build
-          Base: wilsjo2 (NR) + Coldwood1026 XeFGUnlock.h (XeFG for all GPUs)
-          | Component | Version |
-          |-----------|---------|
-          | OptiScaler | ${{ steps.get_version.outputs.version }} - SHA: ${{ steps.get_version.outputs.sha }} |
-          | Intel XeSS SDK | ${{ steps.xess.outputs.version }} |
-          Features: DLSS-NR before SR + XeFG unlocked for all GPUs + Ajustes Finos GUI
-        files: |
-          ${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.7z
-        prerelease: false
-        make_latest: true
-        overwrite_files: true
+        tag_name: NR-XeFG-${{ github.run_number }}
+        files: release.7z
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
