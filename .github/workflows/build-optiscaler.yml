@@ -38,7 +38,7 @@ jobs:
       run: |
         $f = "OptiScaler\Config.h"
         $c = Get-Content $f -Raw
-        $insert = "`n    static constexpr int32_t XeFGMaxInterpolations = 7;`n    CustomOptional<bool> FGXeFGUnlockEnabled { true };`n    CustomOptional<int>  FGXeFGMaxInterpolatedFrames { XeFGMaxInterpolations };`n    CustomOptional<bool> FGXeFGExtraPacing { true };`n"
+        $insert = "`npublic:`n    static constexpr int32_t XeFGMaxInterpolations = 7;`n    CustomOptional<bool> FGXeFGUnlockEnabled { true };`n    CustomOptional<int>  FGXeFGMaxInterpolatedFrames { XeFGMaxInterpolations };`n    CustomOptional<bool> FGXeFGExtraPacing { true };`n"
         $idx = $c.LastIndexOf("};")
         $c = $c.Substring(0, $idx) + $insert + $c.Substring($idx)
         Set-Content $f $c -NoNewline
