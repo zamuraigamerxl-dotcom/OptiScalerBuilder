@@ -61,13 +61,12 @@ jobs:
         with open(f, "r", encoding="utf-8") as fh:
             c = fh.read()
         if "FGXeFGUnlockEnabled" not in c:
-            fields = """
-    // XeFG MFG Unlock (Coldwood1026)
-    static constexpr int32_t XeFGMaxInterpolations = 7;
-    CustomOptional<bool> FGXeFGUnlockEnabled { true };
-    CustomOptional<int>  FGXeFGMaxInterpolatedFrames { XeFGMaxInterpolations };
-    CustomOptional<bool> FGXeFGExtraPacing { true };
-"""
+            fields = "\n" \
+                "    // XeFG MFG Unlock (Coldwood1026)\n" \
+                "    static constexpr int32_t XeFGMaxInterpolations = 7;\n" \
+                "    CustomOptional<bool> FGXeFGUnlockEnabled { true };\n" \
+                "    CustomOptional<int>  FGXeFGMaxInterpolatedFrames { XeFGMaxInterpolations };\n" \
+                "    CustomOptional<bool> FGXeFGExtraPacing { true };\n"
             # Insert before final closing brace of class
             idx = c.rfind("};")
             if idx > 0:
@@ -84,12 +83,11 @@ jobs:
             c = fh.read()
         if "FGXeFGUnlockEnabled" not in c:
             # Add read - after last readBool block
-            read_code = """
-        // XeFG MFG Unlock
-        FGXeFGUnlockEnabled.set_from_config(readBool("XeFG", "UnlockMFG"));
-        FGXeFGMaxInterpolatedFrames.set_from_config(readInt("XeFG", "MaxInterpolatedFrames"));
-        FGXeFGExtraPacing.set_from_config(readBool("XeFG", "ExtraPacing"));
-"""
+            read_code = "\n" \
+                "        // XeFG MFG Unlock\n" \
+                "        FGXeFGUnlockEnabled.set_from_config(readBool(\"XeFG\", \"UnlockMFG\"));\n" \
+                "        FGXeFGMaxInterpolatedFrames.set_from_config(readInt(\"XeFG\", \"MaxInterpolatedFrames\"));\n" \
+                "        FGXeFGExtraPacing.set_from_config(readBool(\"XeFG\", \"ExtraPacing\"));\n"
             idx = c.rfind("readBool")
             if idx > 0:
                 end = c.find("\n", idx)
@@ -97,12 +95,11 @@ jobs:
                 c = c[:end+1] + read_code + c[end+1:]
 
             # Add save - after last SetValue block
-            save_code = """
-        // XeFG MFG Unlock
-        ini.SetValue("XeFG", "UnlockMFG", GetBoolValue(Instance()->FGXeFGUnlockEnabled.value_for_config()).c_str());
-        ini.SetValue("XeFG", "MaxInterpolatedFrames", std::to_string(Instance()->FGXeFGMaxInterpolatedFrames.value_for_config()).c_str());
-        ini.SetValue("XeFG", "ExtraPacing", GetBoolValue(Instance()->FGXeFGExtraPacing.value_for_config()).c_str());
-"""
+            save_code = "\n" \
+                "        // XeFG MFG Unlock\n" \
+                "        ini.SetValue(\"XeFG\", \"UnlockMFG\", GetBoolValue(Instance()->FGXeFGUnlockEnabled.value_for_config()).c_str());\n" \
+                "        ini.SetValue(\"XeFG\", \"MaxInterpolatedFrames\", std::to_string(Instance()->FGXeFGMaxInterpolatedFrames.value_for_config()).c_str());\n" \
+                "        ini.SetValue(\"XeFG\", \"ExtraPacing\", GetBoolValue(Instance()->FGXeFGExtraPacing.value_for_config()).c_str());\n"
             idx = c.rfind("SetValue")
             if idx > 0:
                 end = c.find("\n", idx)
